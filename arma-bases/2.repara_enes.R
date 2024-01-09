@@ -1,0 +1,147 @@
+rm(list = ls())
+
+library(data.table)
+library(tidyverse)
+library(fst)
+library(openxlsx) 
+library(Mectritas)
+library(foreign)
+library(readxl)
+options(scipen=999) 
+
+# Seteamos ruta general
+ruta_pc <- "C:/Users/Usuario/"
+ruta <- paste0(ruta_pc,"Documents/Cep Pedidos/Exportaciones por provincia/arma_bases_final/")
+setwd(ruta)
+
+# Seteamos ruta de bases
+ruta_bases <- "C:/Users/Usuario/Documents/Bases CEP XXI/"
+
+# Seteamos la ruta de las mectras
+ruta_mectras <- "C:/Users/Usuario/Documents/Bases CEP XXI/MECTRA/Mectra FST"
+
+# Abro la correlacion entre posiciones
+correlacion_enes <- setDT(read.xlsx('CorrelacionENES_vmodif.xlsx'))[,. (Año, NCM_DGA, NCM_INDEC)]
+  
+# Abro la base con todos los casos de ENES para corregir
+
+casos_enes <- setDT(read.xlsx('casos_enes.xlsx'))
+#casos_enes <- casos_enes[, posic_sim := substr(posic_sim, 1, 11)]
+casos_enes <- casos_enes[, anyo:= substr(anyo, 3, 4)]
+correlacion_enes <- correlacion_enes[, NCM_DGA := gsub("\\.", "", NCM_DGA)]
+correlacion_enes <- correlacion_enes %>% rename(anyo=Año,
+                                                posic_sim=NCM_DGA)
+
+
+casos_enes <- merge(casos_enes, correlacion_enes, by= c('anyo', 'posic_sim'))
+rm(correlacion_enes)
+
+# Ya con los casos con las posiciones corregidas, preparo la base para mergearse con las bases completas
+casos_enes <- casos_enes[, anyo:= paste0('20', anyo)]
+#colnames(casos_enes) <- toupper(colnames(casos_enes))
+casos_enes <- casos_enes[, ncm_indec := gsub("\\.", "", NCM_INDEC)]
+casos_enes <- casos_enes[,. (anyo, item, nreg_dc, documento, ncm_indec)]
+
+
+
+
+
+
+# Ahora con las posiciones ya corregidas mergeo las bases completas para ajustar las posiciones
+
+bases_impo_aduana <- list.files(paste0(ruta, "impo/"),
+                                pattern='*.DBF',
+                                full.names = T)
+
+bases_impo_aduana <- bases_impo_aduana[str_detect(bases_impo_aduana, '15|16|17|18|19|20|21|22|23')==T]
+
+# Voy a armar una lista con los años para ir llamando a casos_enes año por año
+lista_anios <- seq(2015, 2023, by = 1)
+
+
+
+for (i in 1:length(bases_impo_aduana)){
+  tmp_impo <- setDT(read.dbf(bases_impo_aduana[i]))
+  #tmp_impo$NOMBRE <- NULL
+  tmp_impo$DESTINAC <- NULL
+  #tmp_impo$ORIGEN <- NULL
+  
+  tmp_impo <- tmp_impo %>% rename(DOCUMENTO = IDENT_DECL)
+  
+  tmp_impo <- tmp_impo[(DEST != 'IT01') & (DEST != 'IT04') &
+                         (DEST != 'IT05') & (DEST != 'IT03') &
+                         (DEST != 'TG04')& (DEST != 'IT06') &
+                         (DEST != 'TG05')& (DEST != 'TG06')]
+  
+  tmp_impo$DEST <- NULL
+  
+  names(tmp_impo) <- tolower(names(tmp_impo))
+  tmp_impo <- tmp_impo[, anyo:= as.character(anyo)]
+  tmp_impo <- tmp_impo[, posic_sim := substr(posic_sim, 1, 11)]
+  
+  # Ahora me quedo con los casos del año y modifico esas posiciones
+  
+  casos_tmp <- casos_enes[anyo == lista_anios[i]]
+  
+  reempla <- merge(tmp_impo, casos_tmp, by= c('documento', 'item', 'anyo', 'nreg_dc'))
+
+  # Elimino la posicion anterior y me quedo solo con la nueva
+  reempla$posic_sim <- NULL
+  reempla <- reempla %>% rename(posic_sim = ncm_indec)
+  
+  
+  # Quiero ahora quedarme con un data table que tenga a todas las partidas menos las de ENES
+  prueba <- merge(tmp_impo, casos_tmp, by= c('documento', 'item', 'anyo', 'nreg_dc'), all.x = T)
+  # Las observaciones que quedan con ncm_indec con dato las elimino
+  prueba <- prueba[is.na(ncm_indec)]
+  prueba$ncm_indec <- NULL
+  # Ahora le sumo los casos corregidos a la base 
+  
+  tmp_impo <- rbind(prueba, reempla)
+  
+  
+  # Ahora solo resta colapsar por todas las variables que quiero guardar y debe quedar igual en extension a la version
+  # descargada por esas variables luego de filtrar las temporales 
+  tmp_impo <- tmp_impo %>% rename(cuit = cuit_impor)
+  
+  tmp_impo <- tmp_impo[,. (fob= sum(fob, na.rm= T), kilos= sum(kilos, na.rm=T), 
+                           cant_unest= sum(cant_unest, na.rm=T), cif= sum(cif, na.rm=T)), 
+                       by = c('anyo', 'um_estad', 'umed_estad', 'porg', 'origen', 'mes', 'cuit', 'nombre', 'posic_sim')]
+  
+  # Ya tengo la base final deseada, voy a exportarla en dta, csv y en fst
+  
+  write.csv(tmp_impo, paste0(ruta_bases, 'COMEX/impo_csv/i', lista_anios[i], '.csv'), row.names=F)
+  write.fst(tmp_impo,paste0(ruta_bases, 'COMEX/impo/i', lista_anios[i], '.fst'), compress=100)
+  write.dta(tmp_impo, paste0(ruta_bases, 'COMEX/impo_dta/i', lista_anios[i], '.dta'))
+  
+
+  rm(tmp_impo, prueba, reempla, casos_tmp)
+  print(lista_anios[i])
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
